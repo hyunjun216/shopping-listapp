@@ -77,6 +77,11 @@
       background: #2b7de9;
     }
 
+    .btn-add:disabled {
+      background: #a0aec0;
+      cursor: not-allowed;
+    }
+
     .stats {
       font-size: 0.82rem;
       color: #718096;
@@ -191,6 +196,20 @@
       border-color: #e53e3e;
       color: #e53e3e;
     }
+
+    .loading {
+      text-align: center;
+      color: #a0aec0;
+      padding: 32px 0;
+      font-size: 0.95rem;
+    }
+
+    .error-msg {
+      text-align: center;
+      color: #e53e3e;
+      font-size: 0.82rem;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
@@ -199,9 +218,10 @@
 
     <div class="input-row">
       <input type="text" id="item-input" placeholder="아이템 입력..." maxlength="80">
-      <button class="btn-add" onclick="addItem()">추가</button>
+      <button class="btn-add" id="btn-add" onclick="addItem()">추가</button>
     </div>
 
+    <div class="error-msg" id="error-msg" style="display:none"></div>
     <div class="stats" id="stats"></div>
 
     <div class="filter-row">
@@ -210,6 +230,7 @@
       <button class="filter-btn" onclick="setFilter('done', this)">완료</button>
     </div>
 
+    <div class="loading" id="loading">불러오는 중...</div>
     <ul id="list"></ul>
     <div class="empty" id="empty" style="display:none">아이템이 없습니다</div>
 
@@ -217,42 +238,110 @@
   </div>
 
   <script>
-    const STORAGE_KEY = 'shopping_list_items';
-    let items = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    const SUPABASE_URL = 'https://ohepdjemfucfalgdbmiw.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9oZXBkamVtZnVjZmFsZ2RibWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjA3NTMsImV4cCI6MjA5MTM5Njc1M30.VcB-qdQACEKaX4D3QVYtsYF7PrVosgOpUE5I3sbVK8Y';
+
+    const headers = {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    };
+
+    let items = [];
     let filter = 'all';
 
-    function save() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    async function api(path, options = {}) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+        ...options,
+        headers: { ...headers, ...(options.headers || {}) }
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      if (res.status === 204) return null;
+      return res.json();
     }
 
-    function addItem() {
+    function showError(msg) {
+      const el = document.getElementById('error-msg');
+      el.textContent = msg;
+      el.style.display = 'block';
+      setTimeout(() => el.style.display = 'none', 3000);
+    }
+
+    async function loadItems() {
+      document.getElementById('loading').style.display = 'block';
+      try {
+        items = await api('/shopping_items?order=created_at.asc');
+      } catch (e) {
+        showError('데이터를 불러오지 못했습니다.');
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        render();
+      }
+    }
+
+    async function addItem() {
       const input = document.getElementById('item-input');
       const text = input.value.trim();
       if (!text) return;
-      items.push({ id: Date.now(), text, checked: false });
-      save();
-      render();
-      input.value = '';
-      input.focus();
+
+      const btn = document.getElementById('btn-add');
+      btn.disabled = true;
+      try {
+        const [newItem] = await api('/shopping_items', {
+          method: 'POST',
+          body: JSON.stringify({ text, checked: false })
+        });
+        items.push(newItem);
+        render();
+        input.value = '';
+        input.focus();
+      } catch (e) {
+        showError('추가에 실패했습니다.');
+      } finally {
+        btn.disabled = false;
+      }
     }
 
-    function toggleItem(id) {
+    async function toggleItem(id) {
       const item = items.find(i => i.id === id);
-      if (item) item.checked = !item.checked;
-      save();
-      render();
+      if (!item) return;
+      const newChecked = !item.checked;
+      try {
+        await api(`/shopping_items?id=eq.${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ checked: newChecked })
+        });
+        item.checked = newChecked;
+        render();
+      } catch (e) {
+        showError('업데이트에 실패했습니다.');
+      }
     }
 
-    function deleteItem(id) {
-      items = items.filter(i => i.id !== id);
-      save();
-      render();
+    async function deleteItem(id) {
+      try {
+        await api(`/shopping_items?id=eq.${id}`, { method: 'DELETE' });
+        items = items.filter(i => i.id !== id);
+        render();
+      } catch (e) {
+        showError('삭제에 실패했습니다.');
+      }
     }
 
-    function clearDone() {
-      items = items.filter(i => !i.checked);
-      save();
-      render();
+    async function clearDone() {
+      const doneIds = items.filter(i => i.checked).map(i => i.id);
+      if (!doneIds.length) return;
+      try {
+        await api(`/shopping_items?id=in.(${doneIds.join(',')})`, { method: 'DELETE' });
+        items = items.filter(i => !i.checked);
+        render();
+      } catch (e) {
+        showError('삭제에 실패했습니다.');
+      }
     }
 
     function setFilter(f, btn) {
@@ -311,7 +400,7 @@
       if (e.key === 'Enter') addItem();
     });
 
-    render();
+    loadItems();
   </script>
 </body>
 </html>
